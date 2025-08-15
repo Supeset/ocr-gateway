@@ -1,0 +1,16 @@
+[project]
+name = "ocr-gateway"
+version = "0.1.0"
+description = "A FastAPI service for document recognition using PaddleOCR."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.116.1",
+    "openai>=1.99.9",
+    "paddleocr>=3.1.0",
+    "paddlepaddle>=3.1.0",
+    "pydantic-settings>=2.10.1",
+    "python-multipart>=0.0.20",
+    "setuptools>=80.9.0",
+    "uvicorn>=0.35.0",
+]
