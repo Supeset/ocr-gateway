@@ -39,6 +39,6 @@ source .venv/bin/activate
 # .\.venv\Scripts\activate
 
 # 安装依赖
-uv pip install -r pyproject.toml
+uv sync
 
 uvicorn ocr_gateway.main:app --reload

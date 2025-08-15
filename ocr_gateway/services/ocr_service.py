@@ -1,12 +1,10 @@
 # ocr_gateway/services/ocr_service.py
 import logging
-from functools import lru_cache
 from typing import Dict, Any
 
 import cv2
 import numpy as np
 from openai import OpenAI
-# -------------------- 核心修改 1: 导入独立的检测和识别模块 --------------------
 from paddleocr import TextDetection, TextRecognition
 
 from ..core.config import settings
@@ -15,42 +13,44 @@ from ..core.config import settings
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# -------------------- 核心修改 2: 创建独立的引擎初始化函数 --------------------
-@lru_cache(maxsize=1)
-def get_detection_engine() -> TextDetection | None:
-    """初始化并返回一个单例的文本检测引擎。"""
-    try:
-        logger.warning("Initializing Text Detection engine...")
-        # 使用默认的服务器端检测模型
-        engine = TextDetection(device='gpu' if settings.OCR_USE_GPU else 'cpu')
-        logger.warning("Text Detection engine initialized successfully.")
-        return engine
-    except Exception as e:
-        logger.error(f"Failed to initialize Text Detection engine: {e}", exc_info=True)
-        return None
+# --- 核心修改 1: 创建一个模型加载器函数 ---
+def load_ocr_engines() -> Dict[str, Any]:
+    """
+    在应用启动时加载所有需要的 OCR 模型。
+    返回一个包含所有引擎实例的字典。
+    """
+    logger.warning("--- 开始加载 OCR 模型 ---")
+    
+    # 加载文本检测模型
+    detection_engine = TextDetection(device='gpu' if settings.OCR_USE_GPU else 'cpu')
+    logger.warning("1/3: 文本检测模型加载成功。")
 
-@lru_cache(maxsize=1)
-def get_recognition_engine() -> TextRecognition | None:
-    """初始化并返回一个单例的文本识别引擎。"""
-    try:
-        logger.warning("Initializing Text Recognition engine (PP-OCRv5_server_rec)...")
-        # 明确使用文档中推荐的最新、最强大的 v5 服务器模型
-        engine = TextRecognition(
-            model_name="PP-OCRv5_server_rec",
-            device='gpu' if settings.OCR_USE_GPU else 'cpu'
-        )
-        logger.warning("Text Recognition engine initialized successfully.")
-        return engine
-    except Exception as e:
-        logger.error(f"Failed to initialize Text Recognition engine: {e}", exc_info=True)
-        return None
+    # 加载默认的移动端识别模型
+    recognition_mobile_engine = TextRecognition(
+        model_name="PP-OCRv5_mobile_rec", # 速度更快，作为默认
+        device='gpu' if settings.OCR_USE_GPU else 'cpu'
+    )
+    logger.warning("2/3: 移动端识别模型 (mobile) 加载成功。")
+
+    # 加载高质量的服务器端识别模型
+    recognition_server_engine = TextRecognition(
+        model_name="PP-OCRv5_server_rec", # 精度更高
+        device='gpu' if settings.OCR_USE_GPU else 'cpu'
+    )
+    logger.warning("3/3: 服务器端识别模型 (server) 加载成功。")
+
+    logger.warning("--- 所有 OCR 模型加载完毕 ---")
+
+    return {
+        "detection": detection_engine,
+        "recognition_mobile": recognition_mobile_engine,
+        "recognition_server": recognition_server_engine
+    }
 
 
-@lru_cache(maxsize=1)
+# OpenAI 客户端初始化函数保持不变
 def get_openai_client() -> OpenAI | None:
-    """
-    初始化并返回一个单例的 OpenAI 客户端。(此函数无需修改)
-    """
+    # ... (代码与之前版本完全相同，此处省略)
     if not settings.OPENAI_API_KEY:
         logger.warning("OPENAI_API_KEY not found. AI summarization will be disabled.")
         return None
@@ -62,10 +62,9 @@ def get_openai_client() -> OpenAI | None:
         logger.error(f"Failed to initialize OpenAI client: {e}", exc_info=True)
         return None
 
+# AI 总结函数保持不变
 def _summarize_text_with_ai(text_content: str, filename: str) -> str | None:
-    """
-    使用 AI 模型对提取的文本进行总结。(此函数无需修改)
-    """
+    # ... (代码与之前版本完全相同，此处省略)
     client = get_openai_client()
     if not client or not text_content.strip():
         return None
@@ -100,41 +99,36 @@ def _summarize_text_with_ai(text_content: str, filename: str) -> str | None:
         logger.error(f"Error during AI summarization for '{filename}': {e}", exc_info=True)
         return None
 
-async def recognize_and_summarize_image(image_bytes: bytes, filename: str) -> Dict[str, Any]:
-    """
-    主处理函数：使用两阶段方法（检测+识别）处理图片，然后进行AI总结。
-    """
-    det_engine = get_detection_engine()
-    rec_engine = get_recognition_engine()
 
-    if not det_engine or not rec_engine:
-        raise RuntimeError("OCR service is not available due to engine initialization failure.")
-
+# --- 核心修改 3: 修改核心函数签名，接收引擎作为参数 ---
+async def recognize_and_summarize_image(
+    *, # 强制使用关键字参数，增加代码可读性
+    det_engine: TextDetection,
+    rec_engine: TextRecognition,
+    image_bytes: bytes,
+    filename: str
+) -> Dict[str, Any]:
+    """
+    主处理函数：使用传入的引擎处理图片，然后进行AI总结。
+    """
     image_np = np.frombuffer(image_bytes, np.uint8)
     image_cv = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
     if image_cv is None:
         raise ValueError("无法解码图片，请确保文件格式正确。")
 
-    # === STAGE 1: TEXT DETECTION (已修复) ===
+    # === STAGE 1: TEXT DETECTION (使用传入的引擎) ===
     logger.warning(f"\n======== [开始] 1a. 文本位置检测 | 文件: {filename} ========")
-    
     det_results_list = det_engine.predict(input=image_cv)
-    
     if not det_results_list:
-        logger.warning(f"文本检测未能为图片 '{filename}' 返回任何结果。")
         return {"ocr_results": [], "summary": None}
-        
-    det_result_obj = det_results_list[0]
-    
-    text_boxes = det_result_obj.get('dt_polys', np.array([]))
-
+    text_boxes = det_results_list[0].get('dt_polys', np.array([]))
     if text_boxes.size == 0:
         logger.warning(f"在图片 '{filename}' 中未检测到任何文本框。")
         return {"ocr_results": [], "summary": None}
     logger.warning(f"======== [完成] 1a. 文本位置检测 | 检测到 {len(text_boxes)} 个文本框 ========")
     
-    # === STAGE 2: TEXT RECOGNITION ===
-    logger.warning(f"======== [开始] 1b. 文本内容识别 | 模型: PP-OCRv5_server_rec ========")
+    # === STAGE 2: TEXT RECOGNITION (使用传入的引擎) ===
+    logger.warning(f"======== [开始] 1b. 文本内容识别 | 模型: {rec_engine._model_name} ========")
     cropped_images = [_crop_text_region(image_cv, np.array(box)) for box in text_boxes]
     rec_results = rec_engine.predict(input=cropped_images, batch_size=len(cropped_images))
 
@@ -142,19 +136,10 @@ async def recognize_and_summarize_image(image_bytes: bytes, filename: str) -> Di
     formatted_results = []
     for i, res in enumerate(rec_results):
         box = [[int(p[0]), int(p[1])] for p in text_boxes[i]]
-        
-        # -------------------- 最终 Bug 修正点 (基于调试信息) --------------------
-        # TextRecResult 也是一个类字典对象，我们用 .get() 来安全地访问
         text = res.get('rec_text', '')
         confidence = res.get('rec_score', 0.0)
-        # -------------------- 修正结束 --------------------
-
         raw_text_parts.append(text)
-        formatted_results.append({
-            "box": box,
-            "text": text,
-            "confidence": confidence
-        })
+        formatted_results.append({"box": box, "text": text, "confidence": confidence})
 
     full_text = "\n".join(raw_text_parts)
     logger.warning(f"======== [完成] 1b. 文本内容识别 | 提取总字符数: {len(full_text)} ========")
@@ -162,22 +147,19 @@ async def recognize_and_summarize_image(image_bytes: bytes, filename: str) -> Di
     # === STAGE 3: AI SUMMARY (逻辑不变) ===
     summary = None
     if full_text.strip():
+        # ... (AI总结部分代码与之前版本完全相同，此处省略) ...
         logger.warning(f"======== [开始] 2. AI 结构化总结 | 模型: {settings.OPENAI_MODEL_NAME} ========")
         summary = _summarize_text_with_ai(full_text, filename)
         if summary:
             logger.warning(f"======== [完成] 2. AI 结构化总结 ========")
         else:
             logger.warning(f"======== [失败] 2. AI 结构化总结未能返回结果 ========")
-    else:
-        logger.warning(f"OCR 未能从图片 '{filename}' 中提取任何文本，跳过 AI 总结步骤。")
 
-    return {
-        "ocr_results": formatted_results,
-        "summary": summary
-    }
+    return { "ocr_results": formatted_results, "summary": summary }
 
 # _crop_text_region 函数保持不变
 def _crop_text_region(image: np.ndarray, box: np.ndarray) -> np.ndarray:
+    # ... (代码与之前版本完全相同，此处省略) ...
     points = box.astype(np.float32)
     width = int(np.linalg.norm(points[0] - points[1]))
     height = int(np.linalg.norm(points[1] - points[2]))
