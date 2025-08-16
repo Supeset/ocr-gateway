@@ -48,23 +48,27 @@ def load_ocr_engines() -> Dict[str, Any]:
     }
 
 
-# OpenAI 客户端初始化函数保持不变
 def get_openai_client() -> OpenAI | None:
-    # ... (代码与之前版本完全相同，此处省略)
+    """
+    初始化并返回一个单例的 OpenAI 客户端。
+    """
     if not settings.OPENAI_API_KEY:
-        logger.warning("OPENAI_API_KEY not found. AI summarization will be disabled.")
+        logger.warning("OPENAI_API_KEY 未在环境变量中设置。AI 总结功能将被禁用。")
         return None
+    if not settings.OPENAI_BASE_URL:
+        logger.warning("OPENAI_BASE_URL 未在环境变量中设置。AI 总结功能将被禁用。")
+        return None
+
     try:
-        logger.warning(f"Initializing OpenAI client for model '{settings.OPENAI_MODEL_NAME}'.")
+        logger.warning(f"正在初始化 OpenAI 客户端，目标模型: '{settings.OPENAI_MODEL_NAME}', API 地址: '{settings.OPENAI_BASE_URL}'")
         client = OpenAI(base_url=settings.OPENAI_BASE_URL, api_key=settings.OPENAI_API_KEY)
         return client
     except Exception as e:
-        logger.error(f"Failed to initialize OpenAI client: {e}", exc_info=True)
+        logger.error(f"初始化 OpenAI 客户端失败: {e}", exc_info=True)
         return None
 
 # AI 总结函数保持不变
 def _summarize_text_with_ai(text_content: str, filename: str) -> str | None:
-    # ... (代码与之前版本完全相同，此处省略)
     client = get_openai_client()
     if not client or not text_content.strip():
         return None
